@@ -1,0 +1,85 @@
+name: Build SukiSU-Ultra Kernel (OnePlus 8T / kebab)
+
+# 在 GitHub 云端为一加 8T 编译带 SukiSU-Ultra root 的 LineageOS 23.2 内核 (4.19.325)，
+# 产出可刷入的 AnyKernel3 刷机包 (Artifact，可选发 Release)。
+# 手动触发: Actions -> 本 workflow -> Run workflow。
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: "LineageOS 内核分支"
+        default: "lineage-23.2"
+      ksu_ref:
+        description: "SukiSU-Ultra 提交 (默认锁定对 non-GKI 4.19 可编译的良好提交)"
+        default: "04da52ef4a"
+      enable_susfs:
+        description: "集成 SUSFS (隐藏 root)"
+        type: boolean
+        default: false
+      enable_kpm:
+        description: "启用 SukiSU KPM"
+        type: boolean
+        default: false
+      enable_lto:
+        description: "启用 Clang LTO (更慢/更吃内存)"
+        type: boolean
+        default: false
+      make_release:
+        description: "把刷机包发布为 GitHub Release"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git curl zip bc bison flex libssl-dev libelf-dev cpio kmod python3 \
+            build-essential libncurses-dev ccache clang lld llvm \
+            binutils-aarch64-linux-gnu
+
+      - name: Checkout device tree (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Build kernel + package AnyKernel3
+        env:
+          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+          KSU_REF: ${{ inputs.ksu_ref }}
+          ENABLE_SUSFS: ${{ inputs.enable_susfs && '1' || '0' }}
+          ENABLE_KPM: ${{ inputs.enable_kpm && '1' || '0' }}
+          ENABLE_LTO: ${{ inputs.enable_lto && '1' || '0' }}
+          WORKDIR: ${{ github.workspace }}/kbuild
+          OUTDIR: ${{ github.workspace }}/out_zip
+          JOBS: "4"
+        run: bash scripts/build-sukisu-kernel.sh
+
+      - name: Upload flashable zip (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Ultra-kebab-4.19.325
+          path: out_zip/*.zip
+          if-no-files-found: error
+
+      - name: Publish Release
+        if: ${{ inputs.make_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sukisu-kebab-${{ github.run_number }}
+          name: SukiSU-Ultra kebab 4.19.325 (build ${{ github.run_number }})
+          files: out_zip/*.zip
+          body: |
+            一加 8T (kebab) LineageOS 23.2 内核 4.19.325 + SukiSU-Ultra root。
+            SUSFS=${{ inputs.enable_susfs }}  KPM=${{ inputs.enable_kpm }}  LTO=${{ inputs.enable_lto }}
+            刷入方式见 docs/SukiSU-Ultra-Kernel.md。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
