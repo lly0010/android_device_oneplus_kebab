@@ -138,6 +138,28 @@ if [ "$ENABLE_SUSFS" = "1" ]; then
 fi
 
 # ----------------------------------------------------------------------------
+if [ "$ENABLE_KPM" = "1" ]; then
+  log "4c/8 KPM: 给 kpm.c 打 4.19 access_ok 兼容垫片 (5.0+ 2 参 -> 4.19 3 参)"
+  python3 - "$WORKDIR/kernel/KernelSU/kernel/kpm/kpm.c" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+if '__kpm_access_ok' not in s:
+    shim = ('#include <linux/version.h>\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)\n'
+            'static inline int __kpm_access_ok(const void __user *a, unsigned long n)\n'
+            '{ return access_ok(VERIFY_WRITE, a, n); }\n'
+            '#pragma push_macro("access_ok")\n#undef access_ok\n'
+            '#define access_ok(a, n) __kpm_access_ok((a), (n))\n#endif\n')
+    anc = '#include <linux/uaccess.h>\n'
+    assert anc in s, "kpm.c: uaccess.h anchor missing"
+    s = s.replace(anc, anc + shim, 1)
+    s = s.rstrip('\n') + '\n\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)\n#pragma pop_macro("access_ok")\n#endif\n'
+    open(p, 'w').write(s); print('[+] kpm.c access_ok shim')
+else:
+    print('[=] kpm.c shim present')
+PY
+fi
+
+# ----------------------------------------------------------------------------
 log "5/8 生成内核配置 (kona-perf_defconfig + oplus.config + KSU)"
 AOSP_CLANG="$CLANG_BIN/clang"
 export PATH="/usr/bin:$PATH"   # 主机工具用系统 LLVM，避免旧工具链链接现代 glibc 失败

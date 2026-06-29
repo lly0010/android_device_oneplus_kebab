@@ -137,11 +137,26 @@ edit("fs/namespace.c",
      "\tget_fs_root(current->fs, &fs_root);\n\n\tchrooted = !path_equal(&fs_root, &ns_root);",
      marker="<<no-copy_flags-in-current_chrooted>>")
 
-# B4: a SUS_PATH hunk fuzzed onto file scope; remove it (nd->state set elsewhere)
+# B4: a SUS_PATH hunk fuzzed onto file scope; remove it (re-added correctly in B4b)
 edit("fs/namei.c",
      "EXPORT_SYMBOL(hashlen_string);\n\n#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n\t\tif (nd->state & ND_STATE_LOOKUP_LAST) {\n\t\t\tnd->flags |= ND_FLAGS_LOOKUP_LAST;\n\t\t}\n#endif\n",
      "EXPORT_SYMBOL(hashlen_string);\n",
      marker="<<no-misplaced-nd-state>>")
+
+# B4b: re-add that SUS_PATH lookup-last hook at the correct site (walk_component,
+#      just before lookup_slow). __lookup_slow reads flags & ND_FLAGS_LOOKUP_LAST.
+edit("fs/namei.c",
+     "\t\tif (err < 0)\n\t\t\treturn err;\n"
+     "\t\tpath.dentry = lookup_slow(&nd->last, nd->path.dentry,\n"
+     "\t\t\t\t\t  nd->flags);\n",
+     "\t\tif (err < 0)\n\t\t\treturn err;\n"
+     "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+     "\t\tif (nd->state & ND_STATE_LOOKUP_LAST)\n"
+     "\t\t\tnd->flags |= ND_FLAGS_LOOKUP_LAST;\n"
+     "#endif\n"
+     "\t\tpath.dentry = lookup_slow(&nd->last, nd->path.dentry,\n"
+     "\t\t\t\t\t  nd->flags);\n",
+     marker="\t\t\tnd->flags |= ND_FLAGS_LOOKUP_LAST;")
 
 # B5: 4.19 builds with -std=gnu89; move SUS_PATH decls above the first statement
 edit("fs/readdir.c",
