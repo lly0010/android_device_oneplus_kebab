@@ -11,10 +11,10 @@ on:
         description: "LineageOS 内核分支"
         default: "lineage-23.2"
       ksu_ref:
-        description: "SukiSU-Ultra 提交 (默认锁定对 non-GKI 4.19 可编译的良好提交)"
-        default: "04da52ef4a"
+        description: "SukiSU-Ultra 提交 (留空=按是否开 SUSFS 自动选 稳定基线/HEAD)"
+        default: ""
       enable_susfs:
-        description: "集成 SUSFS (隐藏 root)"
+        description: "集成 SUSFS (隐藏 root, 已移植到 4.19; 仅编译验证需真机测试)"
         type: boolean
         default: false
       enable_kpm:

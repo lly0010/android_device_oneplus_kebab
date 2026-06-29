@@ -13,7 +13,7 @@
 #   ENABLE_LTO=1       启用 Clang LTO (更慢/更吃内存, 贴近 LineageOS 发行版)，默认 0
 #   JOBS=8             并行编译任务数，默认 = nproc
 #   CLANG_DIR=/path    使用已有的 clang-r416183b，跳过下载
-#   KSU_REF=<commit>   SukiSU-Ultra 提交，默认锁定到对 non-GKI 4.19 可编译的已知良好提交
+#   KSU_REF=<commit>   覆盖 SukiSU-Ultra 提交 (默认按是否开 SUSFS 自动选 稳定/HEAD)
 #
 # 经过实测的关键点 (改动需谨慎):
 #   * 内核必须用 AOSP clang-r416183b (内核 build.config.common 锁定的版本)。
@@ -22,6 +22,9 @@
 #     (LineageOS TARGET_KERNEL_CONFIG 即如此)。缺少 oplus.config 会触发
 #     __SMB5_CHARGER_H 头文件保护宏冲突，导致 schgm-flash.c 编译失败。
 #   * non-GKI 走完整手动 hook (apply_ksu_hooks.py)，不是 kprobe。
+#   * ENABLE_SUSFS=1: 用 SukiSU builtin HEAD + 把 ShirkNeko 的 GKI susfs 移植到 4.19
+#     (apply_susfs_4.19_port.py)。核心隐藏 sus_path/mount/kstat/uname/cmdline 生效;
+#     OPEN_REDIRECT/SUS_MAP/selinux_hide 是 GKI 专属已关闭。仅编译验证, 需真机测试。
 #
 set -euo pipefail
 
@@ -37,7 +40,6 @@ DEFCONFIG="${DEFCONFIG:-vendor/kona-perf_defconfig vendor/oplus.config}"
 
 KSU_REPO="${KSU_REPO:-https://github.com/SukiSU-Ultra/SukiSU-Ultra}"
 KSU_BRANCH="${KSU_BRANCH:-builtin}"          # builtin = non-GKI 分支
-KSU_REF="${KSU_REF:-04da52ef4a}"             # 锁定到对 4.19 non-GKI 可编译的提交 (v4.1.3 基线)
 
 ANYKERNEL_REPO="${ANYKERNEL_REPO:-https://github.com/osm0sis/AnyKernel3}"
 
@@ -52,8 +54,18 @@ ENABLE_LTO="${ENABLE_LTO:-0}"
 JOBS="${JOBS:-$(nproc)}"
 OUTDIR="${OUTDIR:-$WORKDIR/out_zip}"
 
-SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu"
-SUSFS_BRANCH="kernel-4.19"
+# SukiSU 提交: 无 SUSFS 用稳定基线; 带 SUSFS 用已实测移植的 builtin HEAD
+if [ "$ENABLE_SUSFS" = "1" ]; then
+  KSU_REF="${KSU_REF:-b88403d2561b6e00dff84a3c851e630c62f57fd0}"   # SukiSU builtin HEAD (实测移植)
+else
+  KSU_REF="${KSU_REF:-04da52ef4a}"                                  # v4.1.3 基线 (non-GKI 稳定)
+fi
+
+# SUSFS 源 = SukiSU 作者(ShirkNeko)的 GKI susfs, 由 apply_susfs_4.19_port.py 移植到 4.19
+SUSFS_REPO="${SUSFS_REPO:-https://github.com/ShirkNeko/susfs4ksu}"
+SUSFS_BRANCH="${SUSFS_BRANCH:-gki-android12-5.10}"
+SUSFS_REF="${SUSFS_REF:-4003ecf2d01c6d13fa8edf6c4f2607365738dc3d}"
+SUSFS_TAG=""; [ "$ENABLE_SUSFS" = "1" ] && SUSFS_TAG="_SUSFS"
 
 log() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -107,16 +119,22 @@ python3 "$SCRIPT_DIR/apply_ksu_hooks.py" "$WORKDIR/kernel"
 
 # ----------------------------------------------------------------------------
 if [ "$ENABLE_SUSFS" = "1" ]; then
-  log "4b/8 集成 SUSFS ($SUSFS_BRANCH)"
+  log "4b/8 集成 SUSFS (SukiSU 风味, 从 GKI 移植到 4.19)"
   cd "$WORKDIR"
-  [ -d susfs4ksu/.git ] || git clone --depth=1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" susfs4ksu
-  cd "$WORKDIR/kernel"
-  cp -v ../susfs4ksu/kernel_patches/fs/* fs/ 2>/dev/null || true
-  cp -v ../susfs4ksu/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
-  PATCH="../susfs4ksu/kernel_patches/50_add_susfs_in_${SUSFS_BRANCH}.patch"
-  if [ -f "$PATCH" ]; then
-    patch -p1 --forward --fuzz=3 < "$PATCH" || log "SUSFS 补丁部分失败(可能已应用)，请检查"
+  if [ ! -d susfs4ksu/.git ]; then
+    git clone -b "$SUSFS_BRANCH" "$SUSFS_REPO" susfs4ksu
+    git -C susfs4ksu checkout "$SUSFS_REF"
   fi
+  cd "$WORKDIR/kernel"
+  SP=../susfs4ksu/kernel_patches
+  cp "$SP/fs/susfs.c" fs/
+  cp "$SP/include/linux/susfs.h" "$SP/include/linux/susfs_def.h" include/linux/
+  # GKI susfs 补丁 (~90% 命中, 自动给 fs/Makefile 加 susfs.o; 余下不兼容处由移植脚本修)
+  patch -p1 --forward --fuzz=3 --no-backup-if-mismatch \
+    < "$SP/50_add_susfs_in_${SUSFS_BRANCH}.patch" || true
+  find . -name '*.rej' -delete
+  # 关键: 把 SukiSU 风味 susfs 移植到 4.19 (十几处 5.10->4.19 修正 + SukiSU 驱动 2 个非 GKI bug)
+  python3 "$SCRIPT_DIR/apply_susfs_4.19_port.py" "$WORKDIR/kernel"
 fi
 
 # ----------------------------------------------------------------------------
@@ -128,9 +146,16 @@ rm -rf out
 # shellcheck disable=SC2086
 "${MK[@]}" $DEFCONFIG
 CFG=(./scripts/config --file out/.config -e KSU)
-[ "$ENABLE_SUSFS" = "1" ] && CFG+=(-e KSU_SUSFS) || CFG+=(-d KSU_SUSFS)
-[ "$ENABLE_KPM"   = "1" ] && CFG+=(-e KPM)       || CFG+=(-d KPM)
-[ "$ENABLE_LTO"   = "1" ] && CFG+=(-e LTO_CLANG) || CFG+=(-d LTO_CLANG -d LTO_CLANG_THIN -e LTO_NONE)
+if [ "$ENABLE_SUSFS" = "1" ]; then
+  CFG+=(-e KSU_SUSFS -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT
+        -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_ENABLE_LOG -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+        -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+        -d KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_SUS_MAP)   # 后两者 GKI 专属, 4.19 关闭
+else
+  CFG+=(-d KSU_SUSFS)
+fi
+[ "$ENABLE_KPM" = "1" ] && CFG+=(-e KPM) || CFG+=(-d KPM)
+[ "$ENABLE_LTO" = "1" ] && CFG+=(-e LTO_CLANG) || CFG+=(-d LTO_CLANG -d LTO_CLANG_THIN -e LTO_NONE)
 "${CFG[@]}"
 "${MK[@]}" olddefconfig
 grep -q '^CONFIG_KSU=y' out/.config || die "CONFIG_KSU 未启用"
@@ -169,11 +194,12 @@ patch_vbmeta_flag=auto
 split_boot
 flash_boot
 AK
+sed -i "s|^kernel.string=.*|kernel.string=SukiSU-Ultra${SUSFS_TAG} kebab (OnePlus 8T) LineageOS 23.2 4.19.325|" AnyKernel3/anykernel.sh
 
 # ----------------------------------------------------------------------------
 log "8/8 生成刷机包"
 mkdir -p "$OUTDIR"
-ZIP="$OUTDIR/SukiSU-Ultra_kebab_4.19.325_$(date +%Y%m%d-%H%M).zip"
+ZIP="$OUTDIR/SukiSU-Ultra${SUSFS_TAG}_kebab_4.19.325_$(date +%Y%m%d-%H%M).zip"
 ( cd AnyKernel3 && zip -r9 "$ZIP" . -x '.git/*' 'README.md' '*.zip' >/dev/null )
 log "完成! 刷机包: $ZIP"
 ls -lh "$ZIP"
