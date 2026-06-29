@@ -1,0 +1,3 @@
+# Python bytecode cache (from scripts/*.py helpers)
+__pycache__/
+*.pyc
