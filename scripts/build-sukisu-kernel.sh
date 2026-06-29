@@ -255,8 +255,8 @@ if [ "$MAKE_BOOTIMG" = "1" ]; then
   if [ -z "$LOS_BOOT_URL" ]; then
     LOS_BOOT_URL=$(curl -fsSL https://download.lineageos.org/api/v2/devices/kebab/builds \
       | python3 -c "import json,sys
-b=json.load(sys.stdin)
-print(next(f['url'] for f in b[-1]['files'] if f['filename']=='boot.img'))")
+b=json.load(sys.stdin)            # API 按日期降序返回, b[0] = 最新版
+print(next(f['url'] for f in b[0]['files'] if f['filename']=='boot.img'))")
   fi
   log "  原厂 boot.img: $LOS_BOOT_URL"
   curl -fsSL "$LOS_BOOT_URL" -o stock-boot.img
