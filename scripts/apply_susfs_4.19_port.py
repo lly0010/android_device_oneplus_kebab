@@ -229,6 +229,26 @@ def guard_selinux_hide(path):
 guard_selinux_hide("security/selinux/selinuxfs.c")
 guard_selinux_hide("security/selinux/hooks.c")
 
+# B11: do_get_hook_type() hardcodes "SUSFS Inline Hook" under CONFIG_KSU_SUSFS — a GKI
+#      assumption (on GKI, SUSFS == inline hook). We use NON-GKI MANUAL hooks, so we must
+#      report "Manual Hook". Otherwise the SukiSU manager thinks it's an inline-hook kernel
+#      and communicates via the reboot() syscall (arm64 142), which the Android app seccomp
+#      sandbox blocks (SIGSYS) -> libksud.so crashes -> manager shows "no root". Manual-hook
+#      mode uses the seccomp-safe ioctl/exec channel instead (the same one the no-SUSFS build
+#      uses, which works). SUSFS commands still go via reboot but from a root context where
+#      KSU has already disabled seccomp, so they are unaffected.
+edit(KSU + "/supercall/dispatch.c",
+     '#ifdef CONFIG_KSU_SUSFS\n'
+     '    const char *type = "SUSFS Inline Hook";\n'
+     '#else\n'
+     '    const char *type = "Manual Hook";\n'
+     '#endif\n',
+     '    /* non-GKI port: we use manual syscall hooks (not inline hooks), so always\n'
+     '       report "Manual Hook". Reporting "SUSFS Inline Hook" makes the manager talk\n'
+     '       to the kernel via the reboot syscall, which app seccomp blocks (SIGSYS) -> no root. */\n'
+     '    const char *type = "Manual Hook";\n',
+     marker='non-GKI port: we use manual syscall hooks')
+
 if failed:
     print(f"\nERROR: failed for: {failed}")
     sys.exit(1)
