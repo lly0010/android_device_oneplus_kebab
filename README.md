@@ -7,6 +7,7 @@
 
 ## 文件
 - `boot_SukiSU-base_kebab_4.19.325.img.gz` — **基础版**:纯 SukiSU root,无 SUSFS。**最稳,建议先刷这个确认能用**。
+- `boot_SukiSU-SUSFS_kebab_4.19.325.img.gz` — **SUSFS 版(无 KPM)**:SukiSU + SUSFS 隐藏 root,不含 KPM。用于排查"全功能版没 root"是不是 KPM 引起的。
 - `boot_SukiSU-SUSFS-KPM_kebab_4.19.325.img.gz` — **全功能版**:SukiSU + SUSFS(隐藏 root/过完整性)+ KPM。SUSFS 仅编译验证,需真机测试。
 
 ## 用法
