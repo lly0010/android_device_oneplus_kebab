@@ -249,6 +249,51 @@ edit(KSU + "/supercall/dispatch.c",
      '    const char *type = "Manual Hook";\n',
      marker='non-GKI port: we use manual syscall hooks')
 
+# B12: THE manager-root fix. KSU clears the manager's seccomp via the task_fix_setuid LSM
+#      hook (zygote spawns manager -> is_uid_manager -> disable_seccomp + install fd). But
+#      ksu_hooks[] registers that hook only `#ifndef CONFIG_KSU_SUSFS`. On GKI, SUSFS instead
+#      hooks the setresuid syscall to call ksu_handle_setresuid (same effect); our non-GKI
+#      manual-hook build never wired that, so with SUSFS ON the manager's seccomp is NEVER
+#      cleared -> its reboot() supercall (syscall 142) is killed by app seccomp (SIGSYS) ->
+#      manager shows "no root" (confirmed on-device). Register task_fix_setuid for SUSFS too,
+#      wrapping the existing ksu_handle_setresuid. The LSM framework works on 4.19 (the no-SUSFS
+#      build already uses this exact hook successfully).
+edit(KSU + "/hook/lsm_hook.c",
+     "    // Mark current proc as umounted\n"
+     "    susfs_set_current_proc_umounted();\n"
+     "\n"
+     "    return 0;\n"
+     "}\n"
+     "#else\n",
+     "    // Mark current proc as umounted\n"
+     "    susfs_set_current_proc_umounted();\n"
+     "\n"
+     "    return 0;\n"
+     "}\n"
+     "\n"
+     "// non-GKI port: register task_fix_setuid LSM hook for SUSFS too (drives\n"
+     "// ksu_handle_setresuid) so the manager's seccomp is cleared and its reboot()\n"
+     "// supercall isn't trapped by seccomp -- otherwise the manager can't get root.\n"
+     "static int ksu_task_fix_setuid_susfs(struct cred *new, const struct cred *old, int flags)\n"
+     "{\n"
+     "    if (unlikely(!new || !old))\n"
+     "        return 0;\n"
+     "    return ksu_handle_setresuid(new->uid.val, new->euid.val, new->suid.val);\n"
+     "}\n"
+     "#else\n",
+     marker="ksu_task_fix_setuid_susfs(struct cred")
+
+edit(KSU + "/hook/lsm_hook.c",
+     "#ifndef CONFIG_KSU_SUSFS\n"
+     "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),\n"
+     "#endif",
+     "#ifndef CONFIG_KSU_SUSFS\n"
+     "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),\n"
+     "#else\n"
+     "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid_susfs),\n"
+     "#endif",
+     marker="task_fix_setuid, ksu_task_fix_setuid_susfs")
+
 if failed:
     print(f"\nERROR: failed for: {failed}")
     sys.exit(1)
