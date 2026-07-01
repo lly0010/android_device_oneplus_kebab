@@ -33,16 +33,18 @@
    - `enable_susfs`：是否集成 SUSFS（隐藏 root，过完整性校验），默认关。
    - `enable_kpm`：是否启用 SukiSU KPM，默认关。
    - `enable_lto`：是否启用 Clang LTO（更慢更吃内存），默认关。
+   - `make_bootimg`：是否额外产出可 `fastboot flash boot` 直刷的 boot.img（默认开，**推荐**）。
+   - `los_boot_url`：原厂 boot.img 地址（留空=自动取 LineageOS 最新 kebab 版）。
    - `make_release`：是否把刷机包发布为 Release。
-3. 等待编译完成（约 30–50 分钟），在该次运行的 **Artifacts**（或 Release）里下载
-   `SukiSU-Ultra-kebab-4.19.325` 刷机包 zip。
+3. 等待编译完成（约 30–50 分钟），在该次运行的 **Artifacts**（或 Release）里下载产物：
+   `boot_*.img`（fastboot 直刷，**推荐**）和 `SukiSU-Ultra*_kebab_4.19.325_*.zip`（AnyKernel3）。
 
 ### 方式 B：本地编译（自己的 Ubuntu/Linux）
 
 ```bash
 # 依赖（Ubuntu/Debian）
 sudo apt-get update
-sudo apt-get install -y git curl zip bc bison flex libssl-dev libelf-dev cpio \
+sudo apt-get install -y git curl zip unzip bc bison flex libssl-dev libelf-dev cpio \
   kmod python3 build-essential libncurses-dev ccache clang lld llvm \
   binutils-aarch64-linux-gnu
 
@@ -54,28 +56,41 @@ bash scripts/build-sukisu-kernel.sh
 
 脚本会自动：克隆内核 → 下载 **AOSP clang-r416183b** → 接入 SukiSU-Ultra → 打 hook →
 按 `vendor/kona-perf_defconfig + vendor/oplus.config` 配置 → 编译 `Image` → 用
-AnyKernel3 打包。完成后刷机包在 `kbuild/out_zip/` 下。
+AnyKernel3 打包 → 再用 magiskboot 生成 `boot.img`。完成后产物在 `kbuild/out_zip/` 下
+（`boot_*.img` 可 fastboot 直刷 + AnyKernel3 `*.zip`）。
 
 ---
 
-## 3. 刷入刷机包
+## 3. 刷入（两种方式，推荐 boot.img）
 
-一加 8T 是 **A/B 机型**。先**备份当前 boot**，再刷。
+一加 8T 是 **A/B 机型**。**刷前务必备份当前 boot**。
 
-### 方法一：自定义 Recovery（最简单）
-1. 安装 OrangeFox/TWRP（kebab 版）。
-2. 进 Recovery → 安装 → 选择 `SukiSU-Ultra_kebab_4.19.325_*.zip` → 刷入 → 重启。
+> ⚠️ **LineageOS 自带 recovery 刷不了 AnyKernel3 zip！** 它强制校验 OTA 签名，遇到未签名的
+> AnyKernel3 包会报 `Signature verification failed` / `Install ... status 1 / aborted` 而中止
+> （手机不会被改动）。所以要么用下面的 **boot.img 方式（不用 recovery）**，要么用
+> **OrangeFox/TWRP** 刷 zip。
 
-### 方法二：fastboot（无 TWRP 时）
-AnyKernel3 zip 也支持把内核打进 boot 后用 fastboot 刷。或手动：
+### 方式一：fastboot 直刷 boot.img（推荐，全程不碰 recovery）
+构建会额外产出 `boot_SukiSU-Ultra*_kebab_4.19.325_*.img`（在 Actions 的 Artifacts / Release 里）。
+它 = 官方 LineageOS kebab 原厂 `boot.img` 换上本内核（ramdisk/dtb/cmdline 原封不动），
+由 `magiskboot` 在构建时完成，等价于 AnyKernel3 在机上做的事。
+
 ```bash
-# 先备份当前槽位 boot（重要！）
 adb reboot bootloader
-# 用刷机包内的 AnyKernel3 直接生成/刷写，或自行用 magiskboot 把 Image 打进原 boot.img 后：
-fastboot flash boot patched_boot.img      # 刷到当前使用的槽位
+# ① 先零风险测试：临时启动（ramboot，不写入任何分区）
+fastboot boot boot_SukiSU-Ultra_kebab_4.19.325_*.img
+#    能进系统 + 管理器显示已 root → 再永久刷入：
+# ② 永久刷入当前槽位
+fastboot flash boot boot_SukiSU-Ultra_kebab_4.19.325_*.img
 fastboot reboot
 ```
-> 回退：重新刷入原始 boot（或重刷 LineageOS 整包 / `fastboot flash boot <原boot.img>`）。
+> 卡开机/黑屏？因 `fastboot boot` 不写盘，长按电源强制重启即恢复原状，毫发无损。
+> 回退已刷入的：`fastboot flash boot <原厂 boot.img>`（LineageOS 下载页对每个版本都单独提供 boot.img）。
+
+### 方式二：OrangeFox/TWRP 刷 AnyKernel3 zip
+1. `adb reboot bootloader` → `fastboot boot OrangeFox-kebab.img`（临时启动，不必永久安装）。
+2. 进去 → Install / ADB Sideload → 选 `SukiSU-Ultra*_kebab_4.19.325_*.zip` → 刷入 → 重启。
+> **不要用 LineageOS 自带 recovery 的 “Apply update from ADB” 刷这个 zip**（签名校验会拒绝）。
 
 ---
 

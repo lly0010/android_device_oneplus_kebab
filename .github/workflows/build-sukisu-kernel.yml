@@ -25,6 +25,13 @@ on:
         description: "启用 Clang LTO (更慢/更吃内存)"
         type: boolean
         default: false
+      make_bootimg:
+        description: "额外产出可 fastboot flash boot 直刷的 boot.img (绕开 recovery, 推荐)"
+        type: boolean
+        default: true
+      los_boot_url:
+        description: "原厂 boot.img 地址 (留空=自动取 LineageOS 最新 kebab 版)"
+        default: ""
       make_release:
         description: "把刷机包发布为 GitHub Release"
         type: boolean
@@ -44,7 +51,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git curl zip bc bison flex libssl-dev libelf-dev cpio kmod python3 \
+            git curl zip unzip bc bison flex libssl-dev libelf-dev cpio kmod python3 \
             build-essential libncurses-dev ccache clang lld llvm \
             binutils-aarch64-linux-gnu
 
@@ -58,16 +65,20 @@ jobs:
           ENABLE_SUSFS: ${{ inputs.enable_susfs && '1' || '0' }}
           ENABLE_KPM: ${{ inputs.enable_kpm && '1' || '0' }}
           ENABLE_LTO: ${{ inputs.enable_lto && '1' || '0' }}
+          MAKE_BOOTIMG: ${{ inputs.make_bootimg && '1' || '0' }}
+          LOS_BOOT_URL: ${{ inputs.los_boot_url }}
           WORKDIR: ${{ github.workspace }}/kbuild
           OUTDIR: ${{ github.workspace }}/out_zip
           JOBS: "4"
         run: bash scripts/build-sukisu-kernel.sh
 
-      - name: Upload flashable zip (artifact)
+      - name: Upload flashable zip + boot.img (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: SukiSU-Ultra-kebab-4.19.325
-          path: out_zip/*.zip
+          path: |
+            out_zip/*.zip
+            out_zip/*.img
           if-no-files-found: error
 
       - name: Publish Release
@@ -76,10 +87,15 @@ jobs:
         with:
           tag_name: sukisu-kebab-${{ github.run_number }}
           name: SukiSU-Ultra kebab 4.19.325 (build ${{ github.run_number }})
-          files: out_zip/*.zip
+          files: |
+            out_zip/*.zip
+            out_zip/*.img
           body: |
             一加 8T (kebab) LineageOS 23.2 内核 4.19.325 + SukiSU-Ultra root。
             SUSFS=${{ inputs.enable_susfs }}  KPM=${{ inputs.enable_kpm }}  LTO=${{ inputs.enable_lto }}
-            刷入方式见 docs/SukiSU-Ultra-Kernel.md。
+
+            两种刷入方式 (见 docs/SukiSU-Ultra-Kernel.md):
+            - **boot.img** (推荐, 不用 recovery): `fastboot flash boot boot_*.img` (可先 `fastboot boot` 零风险测试)。
+            - **AnyKernel3 zip**: 需 OrangeFox/TWRP 刷入 (LineageOS 自带 recovery 因签名校验刷不了)。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

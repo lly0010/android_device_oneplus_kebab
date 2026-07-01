@@ -14,6 +14,8 @@
 #   JOBS=8             并行编译任务数，默认 = nproc
 #   CLANG_DIR=/path    使用已有的 clang-r416183b，跳过下载
 #   KSU_REF=<commit>   覆盖 SukiSU-Ultra 提交 (默认按是否开 SUSFS 自动选 稳定/HEAD)
+#   MAKE_BOOTIMG=0     不生成 boot.img (默认 1: 额外出可 fastboot flash boot 直刷的 boot.img, 不用 recovery)
+#   LOS_BOOT_URL=<url> 指定原厂 boot.img 地址 (默认自动取 LineageOS API 最新 kebab 版)
 #
 # 经过实测的关键点 (改动需谨慎):
 #   * 内核必须用 AOSP clang-r416183b (内核 build.config.common 锁定的版本)。
@@ -54,6 +56,11 @@ ENABLE_LTO="${ENABLE_LTO:-0}"
 JOBS="${JOBS:-$(nproc)}"
 OUTDIR="${OUTDIR:-$WORKDIR/out_zip}"
 
+# 额外产出「可 fastboot 直刷的 boot.img」(绕开 recovery; LineageOS 自带 recovery 因签名校验刷不了 AnyKernel3 包)
+MAKE_BOOTIMG="${MAKE_BOOTIMG:-1}"        # 1=生成 boot.img(默认), 0=只出 AnyKernel3 zip
+LOS_BOOT_URL="${LOS_BOOT_URL:-}"         # 原厂 boot.img 下载地址; 留空=自动取 LineageOS API 最新 kebab 版
+MAGISK_APK_URL="${MAGISK_APK_URL:-}"     # Magisk APK 地址(内含 x86_64 magiskboot); 留空=自动取最新 Release
+
 # SukiSU 提交: 无 SUSFS 用稳定基线; 带 SUSFS 用已实测移植的 builtin HEAD
 if [ "$ENABLE_SUSFS" = "1" ]; then
   KSU_REF="${KSU_REF:-b88403d2561b6e00dff84a3c851e630c62f57fd0}"   # SukiSU builtin HEAD (实测移植)
@@ -75,7 +82,7 @@ log "工作目录: $WORKDIR"
 mkdir -p "$WORKDIR"; cd "$WORKDIR"
 
 # ----------------------------------------------------------------------------
-log "1/8 克隆内核源码 ($KERNEL_BRANCH)"
+log "1/9 克隆内核源码 ($KERNEL_BRANCH)"
 if [ ! -d kernel/.git ]; then
   rm -rf kernel
   git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
@@ -83,7 +90,7 @@ fi
 grep -qE '^SUBLEVEL = 325' kernel/Makefile || log "提示: 内核 SUBLEVEL 非 325，分支可能已更新"
 
 # ----------------------------------------------------------------------------
-log "2/8 准备工具链 clang-r416183b"
+log "2/9 准备工具链 clang-r416183b"
 if [ -n "${CLANG_DIR:-}" ]; then
   CLANG_BIN="$CLANG_DIR/bin"
 elif [ -x "$WORKDIR/aosp-clang/$CLANG_NAME/bin/clang" ]; then
@@ -100,7 +107,7 @@ fi
 "$CLANG_BIN/clang" --version | head -1
 
 # ----------------------------------------------------------------------------
-log "3/8 集成 SukiSU-Ultra 驱动 (non-GKI builtin, 锁定 $KSU_REF)"
+log "3/9 集成 SukiSU-Ultra 驱动 (non-GKI builtin, 锁定 $KSU_REF)"
 cd "$WORKDIR/kernel"
 if [ ! -d KernelSU/.git ]; then
   rm -rf KernelSU
@@ -114,12 +121,12 @@ grep -q 'kernelsu' drivers/Kconfig  || sed -i '/^menu "Device Drivers"/a source 
 [ -e drivers/kernelsu/Kconfig ] || die "drivers/kernelsu 符号链接未解析"
 
 # ----------------------------------------------------------------------------
-log "4/8 应用 non-GKI 完整手动 hook"
+log "4/9 应用 non-GKI 完整手动 hook"
 python3 "$SCRIPT_DIR/apply_ksu_hooks.py" "$WORKDIR/kernel"
 
 # ----------------------------------------------------------------------------
 if [ "$ENABLE_SUSFS" = "1" ]; then
-  log "4b/8 集成 SUSFS (SukiSU 风味, 从 GKI 移植到 4.19)"
+  log "4b/9 集成 SUSFS (SukiSU 风味, 从 GKI 移植到 4.19)"
   cd "$WORKDIR"
   if [ ! -d susfs4ksu/.git ]; then
     git clone -b "$SUSFS_BRANCH" "$SUSFS_REPO" susfs4ksu
@@ -139,7 +146,7 @@ fi
 
 # ----------------------------------------------------------------------------
 if [ "$ENABLE_KPM" = "1" ]; then
-  log "4c/8 KPM: 给 kpm.c 打 4.19 access_ok 兼容垫片 (5.0+ 2 参 -> 4.19 3 参)"
+  log "4c/9 KPM: 给 kpm.c 打 4.19 access_ok 兼容垫片 (5.0+ 2 参 -> 4.19 3 参)"
   python3 - "$WORKDIR/kernel/KernelSU/kernel/kpm/kpm.c" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -160,7 +167,7 @@ PY
 fi
 
 # ----------------------------------------------------------------------------
-log "5/8 生成内核配置 (kona-perf_defconfig + oplus.config + KSU)"
+log "5/9 生成内核配置 (kona-perf_defconfig + oplus.config + KSU)"
 AOSP_CLANG="$CLANG_BIN/clang"
 export PATH="/usr/bin:$PATH"   # 主机工具用系统 LLVM，避免旧工具链链接现代 glibc 失败
 MK=(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 "CC=$AOSP_CLANG")
@@ -183,14 +190,14 @@ fi
 grep -q '^CONFIG_KSU=y' out/.config || die "CONFIG_KSU 未启用"
 
 # ----------------------------------------------------------------------------
-log "6/8 编译内核 Image (-j$JOBS)"
+log "6/9 编译内核 Image (-j$JOBS)"
 "${MK[@]}" -j"$JOBS" Image
 IMG="$WORKDIR/kernel/out/arch/arm64/boot/Image"
 [ -f "$IMG" ] || die "未生成 Image"
 log "Image 完成: $(ls -lh "$IMG" | awk '{print $5}')"
 
 # ----------------------------------------------------------------------------
-log "7/8 用 AnyKernel3 打包"
+log "7/9 用 AnyKernel3 打包"
 cd "$WORKDIR"
 [ -d AnyKernel3/.git ] || git clone --depth=1 "$ANYKERNEL_REPO" AnyKernel3
 cp -f "$IMG" AnyKernel3/Image
@@ -219,9 +226,50 @@ AK
 sed -i "s|^kernel.string=.*|kernel.string=SukiSU-Ultra${SUSFS_TAG} kebab (OnePlus 8T) LineageOS 23.2 4.19.325|" AnyKernel3/anykernel.sh
 
 # ----------------------------------------------------------------------------
-log "8/8 生成刷机包"
+log "8/9 生成刷机包"
 mkdir -p "$OUTDIR"
 ZIP="$OUTDIR/SukiSU-Ultra${SUSFS_TAG}_kebab_4.19.325_$(date +%Y%m%d-%H%M).zip"
 ( cd AnyKernel3 && zip -r9 "$ZIP" . -x '.git/*' 'README.md' '*.zip' >/dev/null )
-log "完成! 刷机包: $ZIP"
+log "AnyKernel3 刷机包: $ZIP"
 ls -lh "$ZIP"
+
+# ----------------------------------------------------------------------------
+# 9/9 额外产出「可 fastboot 直刷的 boot.img」
+# LineageOS 自带 recovery 会校验 OTA 签名, 刷不了未签名的 AnyKernel3 zip(status 1);
+# 这里直接把内核打进原厂 boot.img, 用户 `fastboot flash boot boot.img` 即可, 全程不碰 recovery。
+if [ "$MAKE_BOOTIMG" = "1" ]; then
+  log "9/9 生成 boot.img (原厂 boot + magiskboot 换内核)"
+  BDIR="$WORKDIR/bootimg"; rm -rf "$BDIR"; mkdir -p "$BDIR"; cd "$BDIR"
+
+  # x86_64 magiskboot: 官方 Magisk APK 内置各架构 magiskboot, 取 x86_64 那个(可在 x86_64 跑)
+  if [ -z "$MAGISK_APK_URL" ]; then
+    MAGISK_APK_URL=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+      | python3 -c "import json,sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if a['name'].endswith('.apk')))")
+  fi
+  log "  Magisk APK: $MAGISK_APK_URL"
+  curl -fsSL "$MAGISK_APK_URL" -o magisk.apk
+  unzip -o -q magisk.apk 'lib/x86_64/libmagiskboot.so' -d apk_x
+  cp apk_x/lib/x86_64/libmagiskboot.so magiskboot && chmod +x magiskboot
+
+  # 原厂 boot.img: LineageOS 为 fastboot 安装单独提供 boot.img, 默认取 API 最新 kebab 版
+  if [ -z "$LOS_BOOT_URL" ]; then
+    LOS_BOOT_URL=$(curl -fsSL https://download.lineageos.org/api/v2/devices/kebab/builds \
+      | python3 -c "import json,sys
+b=json.load(sys.stdin)            # API 按日期降序返回, b[0] = 最新版
+print(next(f['url'] for f in b[0]['files'] if f['filename']=='boot.img'))")
+  fi
+  log "  原厂 boot.img: $LOS_BOOT_URL"
+  curl -fsSL "$LOS_BOOT_URL" -o stock-boot.img
+
+  # 换内核: 解包 -> 用编译好的 Image 覆盖 kernel -> 重打包 (与 AnyKernel3 在机上做的事一致)
+  ./magiskboot unpack stock-boot.img
+  cp -f "$IMG" kernel
+  ./magiskboot repack stock-boot.img new-boot.img
+  BOOTOUT="$OUTDIR/boot_SukiSU-Ultra${SUSFS_TAG}_kebab_4.19.325_$(date +%Y%m%d-%H%M).img"
+  mkdir -p "$OUTDIR"; mv -f new-boot.img "$BOOTOUT"
+  log "boot.img 完成 (fastboot flash boot 直刷, 不用 recovery): $BOOTOUT"
+  ls -lh "$BOOTOUT"
+  cd "$WORKDIR"
+fi
+
+log "全部完成! 产物在 $OUTDIR"

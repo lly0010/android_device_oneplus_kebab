@@ -229,6 +229,78 @@ def guard_selinux_hide(path):
 guard_selinux_hide("security/selinux/selinuxfs.c")
 guard_selinux_hide("security/selinux/hooks.c")
 
+# B11: do_get_hook_type() hardcodes "SUSFS Inline Hook" under CONFIG_KSU_SUSFS — a GKI
+#      assumption (on GKI, SUSFS == inline hook). We use NON-GKI MANUAL hooks, so we must
+#      report "Manual Hook". Otherwise the SukiSU manager thinks it's an inline-hook kernel
+#      and communicates via the reboot() syscall (arm64 142), which the Android app seccomp
+#      sandbox blocks (SIGSYS) -> libksud.so crashes -> manager shows "no root". Manual-hook
+#      mode uses the seccomp-safe ioctl/exec channel instead (the same one the no-SUSFS build
+#      uses, which works). SUSFS commands still go via reboot but from a root context where
+#      KSU has already disabled seccomp, so they are unaffected.
+edit(KSU + "/supercall/dispatch.c",
+     '#ifdef CONFIG_KSU_SUSFS\n'
+     '    const char *type = "SUSFS Inline Hook";\n'
+     '#else\n'
+     '    const char *type = "Manual Hook";\n'
+     '#endif\n',
+     '    /* non-GKI port: we use manual syscall hooks (not inline hooks), so always\n'
+     '       report "Manual Hook". Reporting "SUSFS Inline Hook" makes the manager talk\n'
+     '       to the kernel via the reboot syscall, which app seccomp blocks (SIGSYS) -> no root. */\n'
+     '    const char *type = "Manual Hook";\n',
+     marker='non-GKI port: we use manual syscall hooks')
+
+# B12: THE manager-root fix. KSU clears the manager's seccomp via the task_fix_setuid LSM
+#      hook (zygote spawns manager -> is_uid_manager -> disable_seccomp + install fd). But
+#      ksu_hooks[] registers that hook only `#ifndef CONFIG_KSU_SUSFS`. On GKI, SUSFS instead
+#      hooks the setresuid syscall to call ksu_handle_setresuid (same effect); our non-GKI
+#      manual-hook build never wired that, so with SUSFS ON the manager's seccomp is NEVER
+#      cleared -> its reboot() supercall (syscall 142) is killed by app seccomp (SIGSYS) ->
+#      manager shows "no root" (confirmed on-device). Register task_fix_setuid for SUSFS too,
+#      wrapping the existing ksu_handle_setresuid. The LSM framework works on 4.19 (the no-SUSFS
+#      build already uses this exact hook successfully).
+edit(KSU + "/hook/lsm_hook.c",
+     "    // Mark current proc as umounted\n"
+     "    susfs_set_current_proc_umounted();\n"
+     "\n"
+     "    return 0;\n"
+     "}\n"
+     "#else\n",
+     "    // Mark current proc as umounted\n"
+     "    susfs_set_current_proc_umounted();\n"
+     "\n"
+     "    return 0;\n"
+     "}\n"
+     "\n"
+     "// non-GKI port: register task_fix_setuid LSM hook for SUSFS too. Handle the MANAGER\n"
+     "// directly here (clear seccomp + install fd) BEFORE deferring to ksu_handle_setresuid:\n"
+     "// that function gates on susfs_zygote_sid, which is unreliable on this port, so routing\n"
+     "// the manager through it skips disable_seccomp and the manager's reboot() supercall gets\n"
+     "// killed by seccomp. This mirrors the proven non-SUSFS ksu_task_fix_setuid path.\n"
+     "static int ksu_task_fix_setuid_susfs(struct cred *new, const struct cred *old, int flags)\n"
+     "{\n"
+     "    if (unlikely(!new || !old))\n"
+     "        return 0;\n"
+     "    if (unlikely(is_uid_manager(new->uid.val))) {\n"
+     "        disable_seccomp();\n"
+     "        ksu_install_fd();\n"
+     "        return 0;\n"
+     "    }\n"
+     "    return ksu_handle_setresuid(new->uid.val, new->euid.val, new->suid.val);\n"
+     "}\n"
+     "#else\n",
+     marker="ksu_task_fix_setuid_susfs(struct cred")
+
+edit(KSU + "/hook/lsm_hook.c",
+     "#ifndef CONFIG_KSU_SUSFS\n"
+     "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),\n"
+     "#endif",
+     "#ifndef CONFIG_KSU_SUSFS\n"
+     "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),\n"
+     "#else\n"
+     "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid_susfs),\n"
+     "#endif",
+     marker="task_fix_setuid, ksu_task_fix_setuid_susfs")
+
 if failed:
     print(f"\nERROR: failed for: {failed}")
     sys.exit(1)
